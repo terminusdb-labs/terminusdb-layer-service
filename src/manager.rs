@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     io::{self, ErrorKind},
+    os::unix::prelude::MetadataExt,
     path::PathBuf,
     sync::Arc,
 };
@@ -32,6 +33,31 @@ impl LayerManager {
         }
     }
 
+    async fn file_stream(
+        &self,
+        path: &PathBuf,
+    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send)>> {
+        let size = match tokio::fs::metadata(&path).await {
+            Ok(m) => m.size() as usize,
+            Err(e) => match e.kind() {
+                ErrorKind::NotFound => return Ok(None),
+                _ => return Err(e),
+            },
+        };
+
+        let mut options = tokio::fs::OpenOptions::new();
+        options.create(false);
+        options.read(true);
+
+        match options.open(&path).await {
+            Ok(r) => Ok(Some((size, ReaderStream::new(r)))),
+            Err(e) => match e.kind() {
+                ErrorKind::NotFound => Ok(None),
+                _ => Err(e),
+            },
+        }
+    }
+
     fn primary_layer_file_path(&self, layer: [u32; 5]) -> PathBuf {
         let mut path = self.primary_path.clone();
         let name = name_to_string(layer);
@@ -44,20 +70,9 @@ impl LayerManager {
     async fn primary_layer_file_stream(
         &self,
         layer: [u32; 5],
-    ) -> std::io::Result<Option<impl Stream<Item = io::Result<Bytes>> + Send>> {
-        let mut options = tokio::fs::OpenOptions::new();
-        options.create(false);
-        options.read(true);
-
+    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send)>> {
         let path = self.primary_layer_file_path(layer);
-
-        match options.open(&path).await {
-            Ok(r) => Ok(Some(ReaderStream::new(r))),
-            Err(e) => match e.kind() {
-                ErrorKind::NotFound => Ok(None),
-                _ => Err(e),
-            },
-        }
+        self.file_stream(&path).await
     }
 
     fn local_layer_file_path(&self, layer: [u32; 5]) -> PathBuf {
@@ -77,20 +92,10 @@ impl LayerManager {
     async fn local_layer_file_stream(
         &self,
         layer: [u32; 5],
-    ) -> std::io::Result<Option<impl Stream<Item = io::Result<Bytes>> + Send>> {
-        let mut options = tokio::fs::OpenOptions::new();
-        options.create(false);
-        options.read(true);
-
+    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send)>> {
         let path = self.local_layer_file_path(layer);
 
-        match options.open(&path).await {
-            Ok(r) => Ok(Some(ReaderStream::new(r))),
-            Err(e) => match e.kind() {
-                ErrorKind::NotFound => Ok(None),
-                _ => Err(e),
-            },
-        }
+        self.file_stream(&path).await
     }
 
     fn scratch_layer_file_path(&self, layer: [u32; 5]) -> PathBuf {
@@ -104,13 +109,13 @@ impl LayerManager {
     pub async fn get_layer<'a>(
         self: Arc<Self>,
         layer: [u32; 5],
-    ) -> std::io::Result<Option<impl Stream<Item = io::Result<Bytes>> + Send + 'a>> {
-        if let Some(stream) = self.local_layer_file_stream(layer).await? {
-            Ok(Some(Either::Left(stream)))
-        } else if let Some(stream) = self.primary_layer_file_stream(layer).await? {
+    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send + 'a)>> {
+        if let Some((size, stream)) = self.local_layer_file_stream(layer).await? {
+            Ok(Some((size, Either::Left(stream))))
+        } else if let Some((size, stream)) = self.primary_layer_file_stream(layer).await? {
             // attempt to cache this file
             tokio::spawn(try_copy_layer(self.clone(), layer));
-            Ok(Some(Either::Right(stream)))
+            Ok(Some((size, Either::Right(stream))))
         } else {
             Ok(None)
         }

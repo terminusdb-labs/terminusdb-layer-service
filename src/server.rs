@@ -89,7 +89,10 @@ impl Service {
         let spec = uri_to_spec(req.uri());
         match spec {
             Ok(ResourceSpec::Layer(layer)) => match self.manager.clone().get_layer(layer).await {
-                Ok(Some(stream)) => Ok(Response::new(Body::wrap_stream(stream))),
+                Ok(Some((size, stream))) => Ok(Response::builder()
+                    .header("Content-Length", size)
+                    .body(Body::wrap_stream(stream))
+                    .unwrap()),
                 Ok(None) => Ok(Response::builder()
                     .status(404)
                     .body("Layer not found".into())
