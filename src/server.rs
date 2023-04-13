@@ -97,7 +97,7 @@ impl Service {
         match spec {
             Ok(ResourceSpec::Cache(layer)) => {
                 self.manager.clone().spawn_cache_layer(layer).await;
-                Ok(Response::new("".into()))
+                Ok(Response::builder().status(204).body(Body::empty()).unwrap())
             }
             Ok(ResourceSpec::Layer(layer)) => match self.manager.clone().get_layer(layer).await {
                 Ok(Some((size, stream))) => Ok(Response::builder()
