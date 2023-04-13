@@ -95,10 +95,6 @@ impl Service {
     async fn get(&self, req: Request<Body>) -> Result<Response<Body>, Infallible> {
         let spec = uri_to_spec(req.uri());
         match spec {
-            Ok(ResourceSpec::Cache(layer)) => {
-                self.manager.clone().spawn_cache_layer(layer).await;
-                Ok(Response::builder().status(204).body(Body::empty()).unwrap())
-            }
             Ok(ResourceSpec::Layer(layer)) => match self.manager.clone().get_layer(layer).await {
                 Ok(Some((size, stream))) => Ok(Response::builder()
                     .header("Content-Length", size)
@@ -123,8 +119,22 @@ impl Service {
                 .unwrap()),
         }
     }
-    async fn post(&self, _req: Request<Body>) -> Result<Response<Body>, Infallible> {
-        Ok(Response::new("it was a post".into()))
+    async fn post(&self, req: Request<Body>) -> Result<Response<Body>, Infallible> {
+        let spec = uri_to_spec(req.uri());
+        match spec {
+            Ok(ResourceSpec::Cache(layer)) => {
+                self.manager.clone().spawn_cache_layer(layer).await;
+                Ok(Response::builder().status(204).body(Body::empty()).unwrap())
+            }
+            Ok(_) => Ok(Response::builder()
+                .status(500)
+                .body("Unimplemented".into())
+                .unwrap()),
+            Err(e) => Ok(Response::builder()
+                .status(500)
+                .body(format!("Error: {e:?}").into())
+                .unwrap()),
+        }
     }
 
     async fn invalid(
