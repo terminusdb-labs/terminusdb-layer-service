@@ -10,7 +10,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use terminus_store::storage::{consts::LayerFileEnum, name_to_string, string_to_name};
+use terminus_store::storage::{consts::LayerFileEnum, string_to_name};
 
 use super::manager::LayerManager;
 
@@ -32,6 +32,7 @@ impl InvalidReason {
 }
 
 enum ResourceSpec {
+    Cache([u32; 5]),
     Layer([u32; 5]),
     LayerFile([u32; 5], LayerFileEnum),
 }
@@ -45,17 +46,23 @@ enum SpecParseError {
 
 fn uri_to_spec(uri: &Uri) -> Result<ResourceSpec, SpecParseError> {
     lazy_static! {
-        static ref RE_LAYER: Regex = Regex::new(r"^/([0-9a-f]{40})$").unwrap();
-        static ref RE_FILE: Regex = Regex::new(r"^/([0-9a-f]{40})/(\w+)$").unwrap();
+        static ref RE_CACHE: Regex = Regex::new(r"^/cache/([0-9a-f]{40})$").unwrap();
+        static ref RE_LAYER: Regex = Regex::new(r"^/layer/([0-9a-f]{40})$").unwrap();
+        static ref RE_FILE: Regex = Regex::new(r"^/file/([0-9a-f]{40})/(\w+)$").unwrap();
     }
     let path = uri.path();
 
-    if let Some(captures) = RE_LAYER.captures(path) {
+    if let Some(captures) = RE_CACHE.captures(path) {
+        let name = captures.get(1).unwrap();
+        Ok(ResourceSpec::Cache(
+            string_to_name(name.as_str()).map_err(|_e| SpecParseError::BadLayerName)?,
+        ))
+    } else if let Some(captures) = RE_LAYER.captures(path) {
         let name = captures.get(1).unwrap();
         Ok(ResourceSpec::Layer(
-            string_to_name(name.as_str()).map_err(|e| SpecParseError::BadLayerName)?,
+            string_to_name(name.as_str()).map_err(|_e| SpecParseError::BadLayerName)?,
         ))
-    } else if let Some(captures) = RE_FILE.captures(path) {
+    } else if let Some(_captures) = RE_FILE.captures(path) {
         Err(SpecParseError::UnknownLayerFile)
     } else {
         eprintln!("{uri:?}");
@@ -88,6 +95,10 @@ impl Service {
     async fn get(&self, req: Request<Body>) -> Result<Response<Body>, Infallible> {
         let spec = uri_to_spec(req.uri());
         match spec {
+            Ok(ResourceSpec::Cache(layer)) => {
+                self.manager.clone().spawn_cache_layer(layer).await;
+                Ok(Response::new("".into()))
+            }
             Ok(ResourceSpec::Layer(layer)) => match self.manager.clone().get_layer(layer).await {
                 Ok(Some((size, stream))) => Ok(Response::builder()
                     .header("Content-Length", size)

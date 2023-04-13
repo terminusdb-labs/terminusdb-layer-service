@@ -106,19 +106,24 @@ impl LayerManager {
         path
     }
 
-    pub async fn get_layer<'a>(
+    pub async fn get_layer(
         self: Arc<Self>,
         layer: [u32; 5],
-    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send + 'a)>> {
+    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send)>> {
         if let Some((size, stream)) = self.local_layer_file_stream(layer).await? {
             Ok(Some((size, Either::Left(stream))))
         } else if let Some((size, stream)) = self.primary_layer_file_stream(layer).await? {
             // attempt to cache this file
+            self.clone().spawn_cache_layer(layer).await;
             tokio::spawn(try_copy_layer(self.clone(), layer));
             Ok(Some((size, Either::Right(stream))))
         } else {
             Ok(None)
         }
+    }
+
+    pub async fn spawn_cache_layer(self: Arc<Self>, layer: [u32; 5]) {
+        tokio::spawn(try_copy_layer(self, layer));
     }
 }
 
