@@ -1,15 +1,20 @@
 use std::{
     collections::HashSet,
-    io::{self, ErrorKind},
+    io::{self, ErrorKind, SeekFrom},
+    ops::Range,
     os::unix::prelude::MetadataExt,
     path::PathBuf,
     sync::Arc,
 };
 
 use bytes::Bytes;
-use futures::{future::Either, Stream};
-use terminus_store::storage::name_to_string;
-use tokio::sync::Mutex;
+use futures::Stream;
+use terminus_store::storage::{archive::ArchiveHeader, consts::LayerFileEnum, name_to_string};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt},
+    sync::Mutex,
+};
 use tokio_util::io::ReaderStream;
 
 pub struct LayerManager {
@@ -33,10 +38,7 @@ impl LayerManager {
         }
     }
 
-    async fn file_stream(
-        &self,
-        path: &PathBuf,
-    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send)>> {
+    async fn file_reader(&self, path: &PathBuf) -> std::io::Result<Option<(usize, File)>> {
         let size = match tokio::fs::metadata(&path).await {
             Ok(m) => m.size() as usize,
             Err(e) => match e.kind() {
@@ -50,7 +52,7 @@ impl LayerManager {
         options.read(true);
 
         match options.open(&path).await {
-            Ok(r) => Ok(Some((size, ReaderStream::new(r)))),
+            Ok(r) => Ok(Some((size, r))),
             Err(e) => match e.kind() {
                 ErrorKind::NotFound => Ok(None),
                 _ => Err(e),
@@ -67,12 +69,12 @@ impl LayerManager {
         path
     }
 
-    async fn primary_layer_file_stream(
+    async fn primary_layer_file_reader(
         &self,
         layer: [u32; 5],
-    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send)>> {
+    ) -> std::io::Result<Option<(usize, File)>> {
         let path = self.primary_layer_file_path(layer);
-        self.file_stream(&path).await
+        self.file_reader(&path).await
     }
 
     fn local_layer_file_path(&self, layer: [u32; 5]) -> PathBuf {
@@ -89,13 +91,13 @@ impl LayerManager {
         tokio::fs::try_exists(path).await
     }
 
-    async fn local_layer_file_stream(
+    async fn local_layer_file_reader(
         &self,
         layer: [u32; 5],
-    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send)>> {
+    ) -> std::io::Result<Option<(usize, File)>> {
         let path = self.local_layer_file_path(layer);
 
-        self.file_stream(&path).await
+        self.file_reader(&path).await
     }
 
     fn scratch_layer_file_path(&self, layer: [u32; 5]) -> PathBuf {
@@ -106,24 +108,79 @@ impl LayerManager {
         path
     }
 
-    pub async fn get_layer(
+    pub async fn get_layer_reader(
         self: Arc<Self>,
         layer: [u32; 5],
-    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send)>> {
-        if let Some((size, stream)) = self.local_layer_file_stream(layer).await? {
-            Ok(Some((size, Either::Left(stream))))
-        } else if let Some((size, stream)) = self.primary_layer_file_stream(layer).await? {
+    ) -> std::io::Result<Option<(usize, File)>> {
+        if let Some((size, reader)) = self.local_layer_file_reader(layer).await? {
+            Ok(Some((size, reader)))
+        } else if let Some((size, reader)) = self.primary_layer_file_reader(layer).await? {
             // attempt to cache this file
             self.clone().spawn_cache_layer(layer).await;
             tokio::spawn(try_copy_layer(self.clone(), layer));
-            Ok(Some((size, Either::Right(stream))))
+            Ok(Some((size, reader)))
         } else {
             Ok(None)
         }
     }
 
+    pub async fn get_layer(
+        self: Arc<Self>,
+        layer: [u32; 5],
+    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send)>> {
+        self.get_layer_reader(layer)
+            .await
+            .map(|result| result.map(|(size, reader)| (size, ReaderStream::new(reader))))
+    }
+
     pub async fn spawn_cache_layer(self: Arc<Self>, layer: [u32; 5]) {
         tokio::spawn(try_copy_layer(self, layer));
+    }
+
+    async fn get_layer_header(
+        self: Arc<Self>,
+        layer: [u32; 5],
+    ) -> std::io::Result<Option<(ArchiveHeader, File)>> {
+        if let Some((_size, mut reader)) = self.get_layer_reader(layer).await? {
+            Ok(Some((
+                ArchiveHeader::parse_from_reader(&mut reader).await?,
+                reader,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn get_layer_file_range(
+        self: Arc<Self>,
+        layer: [u32; 5],
+        file: LayerFileEnum,
+    ) -> std::io::Result<Option<Range<usize>>> {
+        if let Some((header, mut reader)) = self.get_layer_header(layer).await? {
+            let offset = reader.stream_position().await? as usize;
+            Ok(header.range_for(file).map(|r| Range {
+                start: r.start + offset,
+                end: r.end + offset,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn get_layer_file(
+        self: Arc<Self>,
+        layer: [u32; 5],
+        file: LayerFileEnum,
+    ) -> std::io::Result<Option<(usize, impl Stream<Item = io::Result<Bytes>> + Send)>> {
+        if let Some((header, mut reader)) = self.get_layer_header(layer).await? {
+            if let Some(range) = header.range_for(file) {
+                reader.seek(SeekFrom::Current(range.start as i64)).await?;
+                let size = range.end - range.start;
+                return Ok(Some((size, ReaderStream::new(reader.take(size as u64)))));
+            }
+        }
+
+        Ok(None)
     }
 }
 
