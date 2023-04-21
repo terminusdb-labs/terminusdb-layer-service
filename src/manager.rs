@@ -177,6 +177,17 @@ impl LayerManager {
         layer: [u32; 5],
         file_name: &str,
     ) -> io::Result<()> {
+        // nginx will pass in a full path to some file.  Since we want
+        // to be at least somewhat security aware, we don't want this
+        // to just accept any arbitrary path. The path needs to
+        // actually live in what we know to be the upload path.
+        let path: PathBuf = file_name.into();
+        if path.parent() != Some(&self.upload_path) {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "given file is not in upload folder",
+            ));
+        }
         self.move_uploaded_layer(layer, file_name).await
     }
 
