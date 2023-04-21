@@ -182,13 +182,21 @@ impl LayerManager {
         // to just accept any arbitrary path. The path needs to
         // actually live in what we know to be the upload path.
         let path: PathBuf = file_name.into();
-        if path.parent() != Some(&self.upload_path) {
+        if path.parent().is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "given file has no parent folder",
+            ));
+        }
+        let parent = tokio::fs::canonicalize(path.parent().unwrap()).await?;
+        let upload_path = tokio::fs::canonicalize(&self.upload_path).await?;
+        if parent != upload_path {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "given file is not in upload folder",
             ));
         }
-        self.move_uploaded_layer(layer, file_name).await
+        self.move_uploaded_layer(layer, path).await
     }
 
     pub async fn spawn_cache_layer(self: Arc<Self>, layer: [u32; 5]) {
