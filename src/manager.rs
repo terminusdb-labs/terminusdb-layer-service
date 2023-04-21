@@ -160,12 +160,19 @@ impl LayerManager {
         layer: [u32; 5],
         file_path: impl AsRef<Path>,
     ) -> io::Result<()> {
+        {
+            // start out by making sure the file to be moved is
+            // actually fully on disk.
+            let file = tokio::fs::File::open(&file_path).await?;
+            file.sync_data().await?;
+        }
+
         let destination_path = self.primary_layer_file_path(layer);
         if let Some(parent) = destination_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
         eprintln!("{:?}", file_path.as_ref());
-        tokio::fs::rename(file_path, destination_path).await?;
+        tokio::fs::rename(file_path, &destination_path).await?;
 
         self.spawn_cache_layer(layer).await;
 
