@@ -95,13 +95,19 @@ struct Service {
 }
 
 impl Service {
-    fn new<P1: Into<PathBuf>, P2: Into<PathBuf>, P3: Into<PathBuf>>(
+    fn new<P1: Into<PathBuf>, P2: Into<PathBuf>, P3: Into<PathBuf>, P4: Into<PathBuf>>(
         primary_path: P1,
         local_path: P2,
-        scratch_path: P3,
+        upload_path: P3,
+        scratch_path: P4,
     ) -> Self {
         Service {
-            manager: Arc::new(LayerManager::new(primary_path, local_path, scratch_path)),
+            manager: Arc::new(LayerManager::new(
+                primary_path,
+                local_path,
+                upload_path,
+                scratch_path,
+            )),
         }
     }
     async fn serve(&self, req: Request<Body>) -> Result<Response<Body>, Infallible> {
@@ -164,12 +170,26 @@ impl Service {
                 .unwrap()),
         }
     }
-    async fn post(&self, req: Request<Body>) -> Result<Response<Body>, Infallible> {
+    async fn post(&self, mut req: Request<Body>) -> Result<Response<Body>, Infallible> {
         let spec = uri_to_spec(req.uri());
         match spec {
             Ok(ResourceSpec::Cache(layer)) => {
                 self.manager.clone().spawn_cache_layer(layer).await;
                 Ok(Response::builder().status(204).body(Body::empty()).unwrap())
+            }
+            Ok(ResourceSpec::Layer(layer)) => {
+                match self
+                    .manager
+                    .clone()
+                    .upload_layer(layer, req.body_mut())
+                    .await
+                {
+                    Ok(()) => Ok(Response::builder().status(204).body(Body::empty()).unwrap()),
+                    Err(e) => Ok(Response::builder()
+                        .status(500)
+                        .body(format!("Error: {e:?}").into())
+                        .unwrap()),
+                }
             }
             Ok(_) => Ok(Response::builder()
                 .status(500)
@@ -381,14 +401,20 @@ pub fn file_enum_to_string(file: LayerFileEnum) -> Option<&'static str> {
     Some(result)
 }
 
-pub async fn serve<P1: Into<PathBuf>, P2: Into<PathBuf>, P3: Into<PathBuf>>(
+pub async fn serve<P1: Into<PathBuf>, P2: Into<PathBuf>, P3: Into<PathBuf>, P4: Into<PathBuf>>(
     primary_path: P1,
     local_path: P2,
-    scratch_path: P3,
+    upload_path: P3,
+    scratch_path: P4,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port);
-    let service = Arc::new(Service::new(primary_path, local_path, scratch_path));
+    let service = Arc::new(Service::new(
+        primary_path,
+        local_path,
+        upload_path,
+        scratch_path,
+    ));
 
     let make_svc = make_service_fn(move |_conn| {
         let s = service.clone();

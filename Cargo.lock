@@ -78,6 +78,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-tempfile"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "121280bd2055a6bfbc7ff5a14f700a38b2e127cb8b4066b7ef7320421600dff0"
+dependencies = [
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1171,6 +1181,7 @@ dependencies = [
 name = "terminusdb-layer-service"
 version = "0.1.0"
 dependencies = [
+ "async-tempfile",
  "bytes",
  "clap",
  "futures",
@@ -1332,6 +1343,15 @@ name = "utf8parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "711b9620af191e0cdc7468a8d14e709c3dcdb115b36f838e601583af800a370a"
+
+[[package]]
+name = "uuid"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b55a3fef2a1e3b3a00ce878640918820d3c51081576ac657d23af9fc7928fdb"
+dependencies = [
+ "getrandom",
+]
 
 [[package]]
 name = "version_check"

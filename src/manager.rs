@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    error::Error,
     io::{self, ErrorKind, SeekFrom},
     ops::Range,
     os::unix::prelude::MetadataExt,
@@ -7,32 +8,37 @@ use std::{
     sync::Arc,
 };
 
+use async_tempfile::TempFile;
 use bytes::Bytes;
 use futures::Stream;
 use terminus_store::storage::{archive::ArchiveHeader, consts::LayerFileEnum, name_to_string};
 use tokio::{
     fs::File,
-    io::{AsyncReadExt, AsyncSeekExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::Mutex,
 };
+use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
 
 pub struct LayerManager {
     primary_path: PathBuf,
     local_path: PathBuf,
+    upload_path: PathBuf,
     scratch_path: PathBuf,
     work_set: Mutex<HashSet<[u32; 5]>>,
 }
 
 impl LayerManager {
-    pub fn new<P1: Into<PathBuf>, P2: Into<PathBuf>, P3: Into<PathBuf>>(
+    pub fn new<P1: Into<PathBuf>, P2: Into<PathBuf>, P3: Into<PathBuf>, P4: Into<PathBuf>>(
         primary_path: P1,
         local_path: P2,
-        scratch_path: P3,
+        upload_path: P3,
+        scratch_path: P4,
     ) -> Self {
         LayerManager {
             primary_path: primary_path.into(),
             local_path: local_path.into(),
+            upload_path: upload_path.into(),
             scratch_path: scratch_path.into(),
             work_set: Mutex::new(HashSet::new()),
         }
@@ -131,6 +137,28 @@ impl LayerManager {
         self.get_layer_reader(layer)
             .await
             .map(|result| result.map(|(size, reader)| (size, ReaderStream::new(reader))))
+    }
+
+    pub async fn upload_layer(
+        self: Arc<Self>,
+        layer: [u32; 5],
+        mut stream: impl Stream<Item = Result<Bytes, hyper::Error>> + Unpin,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut file = TempFile::new_in(&self.upload_path).await?;
+        while let Some(mut bytes) = stream.try_next().await? {
+            file.write_all_buf(&mut bytes).await?;
+        }
+        file.flush().await?;
+        // now copy
+        let destination_path = self.primary_layer_file_path(layer);
+        if let Some(parent) = destination_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::rename(file.file_path(), destination_path).await?;
+
+        self.spawn_cache_layer(layer).await;
+
+        Ok(())
     }
 
     pub async fn spawn_cache_layer(self: Arc<Self>, layer: [u32; 5]) {
