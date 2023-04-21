@@ -177,10 +177,7 @@ impl LayerManager {
         layer: [u32; 5],
         file_name: &str,
     ) -> io::Result<()> {
-        let mut path = self.upload_path.clone();
-        path.push(file_name);
-
-        self.move_uploaded_layer(layer, path).await
+        self.move_uploaded_layer(layer, file_name).await
     }
 
     pub async fn spawn_cache_layer(self: Arc<Self>, layer: [u32; 5]) {

@@ -34,7 +34,7 @@ impl InvalidReason {
 enum ResourceSpec {
     Cache([u32; 5]),
     Layer([u32; 5]),
-    UploadFile([u32; 5], String),
+    UploadFile([u32; 5]),
     LayerFile([u32; 5], LayerFileEnum),
     LayerFileRange([u32; 5], LayerFileEnum),
 }
@@ -44,7 +44,6 @@ enum SpecParseError {
     UnknownPath,
     BadLayerName,
     UnknownLayerFile,
-    UploadFileLocationMissing,
 }
 
 fn uri_to_spec(uri: &Uri) -> Result<ResourceSpec, SpecParseError> {
@@ -92,13 +91,7 @@ fn uri_to_spec(uri: &Uri) -> Result<ResourceSpec, SpecParseError> {
         let layer_name =
             string_to_name(layer_name.as_str()).map_err(|_e| SpecParseError::BadLayerName)?;
 
-        let file_name = uri.query();
-        if file_name.is_none() || file_name.as_ref().unwrap().is_empty() {
-            return Err(SpecParseError::UploadFileLocationMissing);
-        }
-        let file_name = file_name.unwrap();
-
-        Ok(ResourceSpec::UploadFile(layer_name, file_name.to_owned()))
+        Ok(ResourceSpec::UploadFile(layer_name))
     } else {
         Err(SpecParseError::UnknownPath)
     }
@@ -205,11 +198,33 @@ impl Service {
                         .unwrap()),
                 }
             }
-            Ok(ResourceSpec::UploadFile(layer, file_path)) => {
+            Ok(ResourceSpec::UploadFile(layer)) => {
+                let file_name = req.headers().get("upload-path");
+                if file_name.is_none() {
+                    return Ok(Response::builder()
+                        .status(400)
+                        .body(format!("upload path unspecified").into())
+                        .unwrap());
+                }
+                let file_name = file_name.unwrap().to_str();
+                if file_name.is_err() {
+                    return Ok(Response::builder()
+                        .status(400)
+                        .body(format!("invald upload path").into())
+                        .unwrap());
+                }
+                let file_name = file_name.unwrap();
+                if file_name.is_empty() {
+                    return Ok(Response::builder()
+                        .status(400)
+                        .body(format!("upload path is empty").into())
+                        .unwrap());
+                }
+
                 match self
                     .manager
                     .clone()
-                    .move_uploaded_outside_layer(layer, &file_path)
+                    .move_uploaded_outside_layer(layer, &file_name)
                     .await
                 {
                     Ok(()) => Ok(Response::builder().status(204).body(Body::empty()).unwrap()),
