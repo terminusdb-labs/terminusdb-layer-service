@@ -93,7 +93,7 @@ fn uri_to_spec(uri: &Uri) -> Result<ResourceSpec, SpecParseError> {
             string_to_name(layer_name.as_str()).map_err(|_e| SpecParseError::BadLayerName)?;
 
         let file_name = uri.query();
-        if file_name.is_none() {
+        if file_name.is_none() || file_name.as_ref().unwrap().is_empty() {
             return Err(SpecParseError::UploadFileLocationMissing);
         }
         let file_name = file_name.unwrap();
