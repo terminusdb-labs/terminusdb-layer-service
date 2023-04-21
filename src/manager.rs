@@ -181,14 +181,14 @@ impl LayerManager {
         // to be at least somewhat security aware, we don't want this
         // to just accept any arbitrary path. The path needs to
         // actually live in what we know to be the upload path.
-        let path: PathBuf = file_name.into();
+        let path: PathBuf = tokio::fs::canonicalize(file_name).await?;
         if path.parent().is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "given file has no parent folder",
             ));
         }
-        let parent = tokio::fs::canonicalize(path.parent().unwrap()).await?;
+        let parent = path.parent().unwrap();
         let upload_path = tokio::fs::canonicalize(&self.upload_path).await?;
         if parent != upload_path {
             return Err(io::Error::new(
