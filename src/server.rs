@@ -34,6 +34,7 @@ impl InvalidReason {
 enum ResourceSpec {
     Cache([u32; 5]),
     Layer([u32; 5]),
+    UploadFile([u32; 5], String),
     LayerFile([u32; 5], LayerFileEnum),
     LayerFileRange([u32; 5], LayerFileEnum),
 }
@@ -43,12 +44,14 @@ enum SpecParseError {
     UnknownPath,
     BadLayerName,
     UnknownLayerFile,
+    UploadFileLocationMissing,
 }
 
 fn uri_to_spec(uri: &Uri) -> Result<ResourceSpec, SpecParseError> {
     lazy_static! {
         static ref RE_CACHE: Regex = Regex::new(r"^/cache/([0-9a-f]{40})$").unwrap();
         static ref RE_LAYER: Regex = Regex::new(r"^/layer/([0-9a-f]{40})$").unwrap();
+        static ref RE_UPLOAD: Regex = Regex::new(r"^/upload/([0-9a-f]{40})$").unwrap();
         static ref RE_FILE: Regex = Regex::new(r"^/file/([0-9a-f]{40})/(\w+)$").unwrap();
         static ref RE_FILE_RANGE: Regex = Regex::new(r"^/range/([0-9a-f]{40})/(\w+)$").unwrap();
     }
@@ -84,8 +87,19 @@ fn uri_to_spec(uri: &Uri) -> Result<ResourceSpec, SpecParseError> {
         } else {
             Err(SpecParseError::UnknownLayerFile)
         }
+    } else if let Some(captures) = RE_UPLOAD.captures(path) {
+        let layer_name = captures.get(1).unwrap();
+        let layer_name =
+            string_to_name(layer_name.as_str()).map_err(|_e| SpecParseError::BadLayerName)?;
+
+        let file_name = uri.query();
+        if file_name.is_none() {
+            return Err(SpecParseError::UploadFileLocationMissing);
+        }
+        let file_name = file_name.unwrap();
+
+        Ok(ResourceSpec::UploadFile(layer_name, file_name.to_owned()))
     } else {
-        eprintln!("{uri:?}");
         Err(SpecParseError::UnknownPath)
     }
 }
@@ -182,6 +196,20 @@ impl Service {
                     .manager
                     .clone()
                     .upload_layer(layer, req.body_mut())
+                    .await
+                {
+                    Ok(()) => Ok(Response::builder().status(204).body(Body::empty()).unwrap()),
+                    Err(e) => Ok(Response::builder()
+                        .status(500)
+                        .body(format!("Error: {e:?}").into())
+                        .unwrap()),
+                }
+            }
+            Ok(ResourceSpec::UploadFile(layer, file_path)) => {
+                match self
+                    .manager
+                    .clone()
+                    .move_uploaded_outside_layer(layer, &file_path)
                     .await
                 {
                     Ok(()) => Ok(Response::builder().status(204).body(Body::empty()).unwrap()),

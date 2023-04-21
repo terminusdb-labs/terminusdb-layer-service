@@ -4,7 +4,7 @@ use std::{
     io::{self, ErrorKind, SeekFrom},
     ops::Range,
     os::unix::prelude::MetadataExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -149,16 +149,38 @@ impl LayerManager {
             file.write_all_buf(&mut bytes).await?;
         }
         file.flush().await?;
-        // now copy
+
+        self.move_uploaded_layer(layer, file.file_path()).await?;
+
+        Ok(())
+    }
+
+    async fn move_uploaded_layer(
+        self: Arc<Self>,
+        layer: [u32; 5],
+        file_path: impl AsRef<Path>,
+    ) -> io::Result<()> {
         let destination_path = self.primary_layer_file_path(layer);
         if let Some(parent) = destination_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::rename(file.file_path(), destination_path).await?;
+        eprintln!("{:?}", file_path.as_ref());
+        tokio::fs::rename(file_path, destination_path).await?;
 
         self.spawn_cache_layer(layer).await;
 
         Ok(())
+    }
+
+    pub async fn move_uploaded_outside_layer(
+        self: Arc<Self>,
+        layer: [u32; 5],
+        file_name: &str,
+    ) -> io::Result<()> {
+        let mut path = self.upload_path.clone();
+        path.push(file_name);
+
+        self.move_uploaded_layer(layer, path).await
     }
 
     pub async fn spawn_cache_layer(self: Arc<Self>, layer: [u32; 5]) {
